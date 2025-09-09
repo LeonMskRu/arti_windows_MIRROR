@@ -8,35 +8,42 @@ on:
 permissions:
   contents: write
 
-defaults:
-  run:
-    shell: pwsh
-
 jobs:
   build-release:
     runs-on: windows-latest
 
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
+      # ---------------- Checkout meta repo ----------------
       - name: Checkout meta repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
-      # ---------- Rust / arti ----------
+      # ---------------- Rust / arti ----------------
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Clone Arti (from your mirror)
+      - name: Clone Arti (mirror)
         run: |
-          git clone --depth 1 https://github.com/${{ github.repository_owner }}/arti-mirror arti
+          git clone --depth 1 --branch main https://github.com/${{ github.repository_owner }}/arti-mirror arti
+          cd arti
+          git fetch --tags --force
 
       - name: Detect Arti version
         id: arti_ver
         working-directory: arti
         run: |
-          $ver = git describe --tags --abbrev=0
-          echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
+          $ver = git describe --tags --abbrev=0 2>$null
+          if ([string]::IsNullOrEmpty($ver)) { $ver="0.0.0" }
           echo "Arti version: $ver"
+          echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
 
       - name: Build arti.exe
         working-directory: arti
@@ -45,7 +52,7 @@ jobs:
           New-Item -ItemType Directory -Force ..\dist | Out-Null
           Copy-Item target\x86_64-pc-windows-msvc\release\arti.exe ..\dist\arti.exe
 
-      # ---------- Go toolchain ----------
+      # ---------------- Go toolchain ----------------
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -57,8 +64,7 @@ jobs:
 
       - name: Build lyrebird.exe
         working-directory: lyrebird/cmd/lyrebird
-        run: |
-          go build -o ../../../dist/lyrebird.exe .
+        run: go build -o ../../../dist/lyrebird.exe .
 
       # ---------- snowflake (client) ----------
       - name: Clone snowflake (Go)
@@ -66,8 +72,7 @@ jobs:
 
       - name: Build snowflake-client.exe
         working-directory: snowflake/client
-        run: |
-          go build -o ../../dist/snowflake-client.exe .
+        run: go build -o ../../dist/snowflake-client.exe .
 
       # ---------- webtunnel (client) ----------
       - name: Clone webtunnel (Go)
@@ -75,17 +80,16 @@ jobs:
 
       - name: Build webtunnel-client.exe
         working-directory: webtunnel/main/client
-        run: |
-          go build -o ../../../dist/webtunnel-client.exe .
+        run: go build -o ../../../dist/webtunnel-client.exe .
 
-      # ---------- упаковка + хэши ----------
+      # ---------------- упаковка + хэши ----------------
       - name: Create ZIPs
         run: |
-          Compress-Archive -Path dist\arti.exe            -DestinationPath dist\arti.zip
-          Compress-Archive -Path dist\lyrebird.exe        -DestinationPath dist\lyrebird.zip
+          Compress-Archive -Path dist\arti.exe             -DestinationPath dist\arti.zip
+          Compress-Archive -Path dist\lyrebird.exe         -DestinationPath dist\lyrebird.zip
           Compress-Archive -Path dist\snowflake-client.exe -DestinationPath dist\snowflake.zip
           Compress-Archive -Path dist\webtunnel-client.exe -DestinationPath dist\webtunnel.zip
-          Compress-Archive -Path dist\*.exe               -DestinationPath dist\bundle.zip
+          Compress-Archive -Path dist\*.exe                -DestinationPath dist\bundle.zip
 
       - name: SHA256 checksums
         run: |
@@ -93,7 +97,7 @@ jobs:
             $h = Get-FileHash $_.FullName -Algorithm SHA256
             "$($h.Hash)  $($_.Name)" } | Out-File dist\SHA256SUMS.txt -Encoding ascii
 
-      # ---------- Release ----------
+      # ---------------- Release ----------------
       - name: Prepare release notes
         run: |
           @"
