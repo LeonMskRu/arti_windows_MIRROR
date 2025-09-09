@@ -3,7 +3,7 @@ name: Build Arti + Transports (Windows x64)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *"  # каждый день 06:00 UTC
+    - cron: "0 6 * * *"  # ежедневно 06:00 UTC
 
 permissions:
   contents: write
@@ -40,9 +40,9 @@ jobs:
         id: arti_ver
         working-directory: arti
         run: |
-          $ver = git describe --tags --abbrev=0 2>$null
+          $ver = git tag --list "arti-*" --sort=-creatordate | Select-Object -First 1
           if ([string]::IsNullOrEmpty($ver)) { $ver="0.0.0" }
-          echo "Arti version: $ver"
+          Write-Host "Arti version: $ver"
           echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
 
       - name: Build arti.exe
