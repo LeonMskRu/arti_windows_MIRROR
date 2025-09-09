@@ -24,6 +24,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # ---------------- Install SQLite ----------------
+      - name: Install SQLite (for static build)
+        run: choco install sqlite -y
+
       # ---------------- Rust / arti ----------------
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -82,7 +86,7 @@ jobs:
         working-directory: webtunnel/main/client
         run: go build -o ../../../dist/webtunnel-client.exe .
 
-      # ---------------- упаковка + хэши ----------------
+      # ---------------- упаковка ----------------
       - name: Create ZIPs
         run: |
           Compress-Archive -Path dist\arti.exe             -DestinationPath dist\arti.zip
@@ -91,11 +95,13 @@ jobs:
           Compress-Archive -Path dist\webtunnel-client.exe -DestinationPath dist\webtunnel.zip
           Compress-Archive -Path dist\*.exe                -DestinationPath dist\bundle.zip
 
+      # ---------------- SHA256 ----------------
       - name: SHA256 checksums
         run: |
-          Get-ChildItem dist -File | ForEach-Object {
-            $h = Get-FileHash $_.FullName -Algorithm SHA256
-            "$($h.Hash)  $($_.Name)" } | Out-File dist\SHA256SUMS.txt -Encoding ascii
+          Get-ChildItem dist -File -Exclude SHA256SUMS.txt | ForEach-Object {
+              $h = Get-FileHash $_.FullName -Algorithm SHA256
+              "$($h.Hash)  $($_.Name)"
+          } | Out-File dist\SHA256SUMS.txt -Encoding ascii
 
       # ---------------- Release ----------------
       - name: Prepare release notes
