@@ -1,0 +1,120 @@
+name: Build Arti + Transports (Windows x64)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"  # каждый день 06:00 UTC
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout meta repo
+        uses: actions/checkout@v4
+
+      # ---------- Rust / arti ----------
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Clone Arti (from your mirror)
+        run: |
+          git clone --depth 1 https://github.com/${{ github.repository_owner }}/arti-mirror arti
+
+      - name: Detect Arti version
+        id: arti_ver
+        working-directory: arti
+        run: |
+          $ver = git describe --tags --abbrev=0
+          echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
+          echo "Arti version: $ver"
+
+      - name: Build arti.exe
+        working-directory: arti
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc -p arti
+          New-Item -ItemType Directory -Force ..\dist | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\arti.exe ..\dist\arti.exe
+
+      # ---------- Go toolchain ----------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # ---------- lyrebird ----------
+      - name: Clone lyrebird (Go)
+        run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git
+
+      - name: Build lyrebird.exe
+        working-directory: lyrebird/cmd/lyrebird
+        run: |
+          go build -o ../../../dist/lyrebird.exe .
+
+      # ---------- snowflake (client) ----------
+      - name: Clone snowflake (Go)
+        run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake.git
+
+      - name: Build snowflake-client.exe
+        working-directory: snowflake/client
+        run: |
+          go build -o ../../dist/snowflake-client.exe .
+
+      # ---------- webtunnel (client) ----------
+      - name: Clone webtunnel (Go)
+        run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel.git
+
+      - name: Build webtunnel-client.exe
+        working-directory: webtunnel/main/client
+        run: |
+          go build -o ../../../dist/webtunnel-client.exe .
+
+      # ---------- упаковка + хэши ----------
+      - name: Create ZIPs
+        run: |
+          Compress-Archive -Path dist\arti.exe            -DestinationPath dist\arti.zip
+          Compress-Archive -Path dist\lyrebird.exe        -DestinationPath dist\lyrebird.zip
+          Compress-Archive -Path dist\snowflake-client.exe -DestinationPath dist\snowflake.zip
+          Compress-Archive -Path dist\webtunnel-client.exe -DestinationPath dist\webtunnel.zip
+          Compress-Archive -Path dist\*.exe               -DestinationPath dist\bundle.zip
+
+      - name: SHA256 checksums
+        run: |
+          Get-ChildItem dist -File | ForEach-Object {
+            $h = Get-FileHash $_.FullName -Algorithm SHA256
+            "$($h.Hash)  $($_.Name)" } | Out-File dist\SHA256SUMS.txt -Encoding ascii
+
+      # ---------- Release ----------
+      - name: Prepare release notes
+        run: |
+          @"
+          Bundle build for Windows x64
+
+          - Arti version: $env:arti_version
+          - Lyrebird, Snowflake, WebTunnel: latest main snapshot
+          "@ | Out-File RELEASE_NOTES.md -Encoding utf8
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.arti_version }}
+          name: "Tor bundle (${{ env.arti_version }})"
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/arti.zip
+            dist/lyrebird.zip
+            dist/snowflake.zip
+            dist/webtunnel.zip
+            dist/bundle.zip
+            dist/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
