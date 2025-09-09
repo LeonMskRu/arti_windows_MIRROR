@@ -45,7 +45,7 @@ jobs:
         working-directory: arti
         run: |
           $ver = git tag --list "arti-*" --sort=-creatordate | Select-Object -First 1
-          if ([string]::IsNullOrEmpty($ver)) { $ver="0.0.0" }
+          if ([string]::IsNullOrEmpty($ver)) { $ver="arti-v0.0.0" }
           Write-Host "Arti version: $ver"
           echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
 
@@ -98,10 +98,15 @@ jobs:
       # ---------------- SHA256 ----------------
       - name: SHA256 checksums
         run: |
-          Get-ChildItem dist -File -Exclude SHA256SUMS.txt | ForEach-Object {
-              $h = Get-FileHash $_.FullName -Algorithm SHA256
-              "$($h.Hash)  $($_.Name)"
-          } | Out-File dist\SHA256SUMS.txt -Encoding ascii
+          $files = Get-ChildItem dist -File -Exclude SHA256SUMS.txt
+          if ($files.Count -gt 0) {
+            $files | ForEach-Object {
+                $h = Get-FileHash $_.FullName -Algorithm SHA256
+                "$($h.Hash)  $($_.Name)"
+            } | Out-File dist\SHA256SUMS.txt -Encoding ascii
+          } else {
+            Write-Host "⚠️ No files to hash, skipping SHA256SUMS.txt"
+          }
 
       # ---------------- Release ----------------
       - name: Prepare release notes
