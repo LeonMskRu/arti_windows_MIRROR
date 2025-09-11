@@ -1,4 +1,4 @@
-name: Build Arti + Transports (Windows x64)
+name: Build Arti + Transports (Windows x64 + i686)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,6 @@ permissions:
 jobs:
   build-release:
     runs-on: windows-latest
-
     defaults:
       run:
         shell: pwsh
@@ -29,10 +28,12 @@ jobs:
         run: choco install sqlite -y
 
       # ---------------- Rust / arti ----------------
-      - name: Setup Rust (MSVC)
+      - name: Setup Rust (MSVC x64 + i686)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: |
+            x86_64-pc-windows-msvc
+            i686-pc-windows-msvc
 
       - name: Clone Arti (mirror)
         run: |
@@ -46,15 +47,17 @@ jobs:
         run: |
           $ver = git tag --list "arti-*" --sort=-creatordate | Select-Object -First 1
           if ([string]::IsNullOrEmpty($ver)) { $ver="arti-v0.0.0" }
-          Write-Host "Arti version: $ver"
           echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
+          Write-Host "Arti version: $ver"
 
-      - name: Build arti.exe
+      - name: Build arti.exe (x64 & i686)
         working-directory: arti
         run: |
           cargo build --release --target x86_64-pc-windows-msvc --features static
+          cargo build --release --target i686-pc-windows-msvc --features static
           New-Item -ItemType Directory -Force ..\dist | Out-Null
-          Copy-Item target\x86_64-pc-windows-msvc\release\arti.exe ..\dist\arti.exe
+          Copy-Item target\x86_64-pc-windows-msvc\release\arti.exe ..\dist\arti-x64.exe
+          Copy-Item target\i686-pc-windows-msvc\release\arti.exe   ..\dist\arti-i686.exe
 
       # ---------------- Go toolchain ----------------
       - name: Setup Go
@@ -66,34 +69,59 @@ jobs:
       - name: Clone lyrebird (Go)
         run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git
 
-      - name: Build lyrebird.exe
+      - name: Build lyrebird.exe (x64)
         working-directory: lyrebird/cmd/lyrebird
-        run: go build -o ../../../dist/lyrebird.exe .
+        run: go build -o ../../../dist/lyrebird-x64.exe .
+
+      - name: Build lyrebird.exe (i686)
+        working-directory: lyrebird/cmd/lyrebird
+        run: |
+          $env:GOOS="windows"
+          $env:GOARCH="386"
+          go build -o ../../../dist/lyrebird-i686.exe .
 
       # ---------- snowflake (client) ----------
       - name: Clone snowflake (Go)
         run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake.git
 
-      - name: Build snowflake-client.exe
+      - name: Build snowflake-client.exe (x64)
         working-directory: snowflake/client
-        run: go build -o ../../dist/snowflake-client.exe .
+        run: go build -o ../../dist/snowflake-client-x64.exe .
+
+      - name: Build snowflake-client.exe (i686)
+        working-directory: snowflake/client
+        run: |
+          $env:GOOS="windows"
+          $env:GOARCH="386"
+          go build -o ../../dist/snowflake-client-i686.exe .
 
       # ---------- webtunnel (client) ----------
       - name: Clone webtunnel (Go)
         run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel.git
 
-      - name: Build webtunnel-client.exe
+      - name: Build webtunnel-client.exe (x64)
         working-directory: webtunnel/main/client
-        run: go build -o ../../../dist/webtunnel-client.exe .
+        run: go build -o ../../../dist/webtunnel-client-x64.exe .
+
+      - name: Build webtunnel-client.exe (i686)
+        working-directory: webtunnel/main/client
+        run: |
+          $env:GOOS="windows"
+          $env:GOARCH="386"
+          go build -o ../../../dist/webtunnel-client-i686.exe .
 
       # ---------------- упаковка ----------------
       - name: Create ZIPs
         run: |
-          Compress-Archive -Path dist\arti.exe             -DestinationPath dist\arti.zip
-          Compress-Archive -Path dist\lyrebird.exe         -DestinationPath dist\lyrebird.zip
-          Compress-Archive -Path dist\snowflake-client.exe -DestinationPath dist\snowflake.zip
-          Compress-Archive -Path dist\webtunnel-client.exe -DestinationPath dist\webtunnel.zip
-          Compress-Archive -Path dist\*.exe                -DestinationPath dist\bundle.zip
+          Compress-Archive -Path dist\arti-x64.exe             -DestinationPath dist\arti-x64.zip
+          Compress-Archive -Path dist\arti-i686.exe            -DestinationPath dist\arti-i686.zip
+          Compress-Archive -Path dist\lyrebird-x64.exe         -DestinationPath dist\lyrebird-x64.zip
+          Compress-Archive -Path dist\lyrebird-i686.exe        -DestinationPath dist\lyrebird-i686.zip
+          Compress-Archive -Path dist\snowflake-client-x64.exe -DestinationPath dist\snowflake-x64.zip
+          Compress-Archive -Path dist\snowflake-client-i686.exe -DestinationPath dist\snowflake-i686.zip
+          Compress-Archive -Path dist\webtunnel-client-x64.exe -DestinationPath dist\webtunnel-x64.zip
+          Compress-Archive -Path dist\webtunnel-client-i686.exe -DestinationPath dist\webtunnel-i686.zip
+          Compress-Archive -Path dist\*.exe                    -DestinationPath dist\bundle.zip
 
       # ---------------- SHA256 ----------------
       - name: SHA256 checksums
@@ -112,7 +140,7 @@ jobs:
       - name: Prepare release notes
         run: |
           @"
-          Bundle build for Windows x64
+          Bundle build for Windows x64 + i686
 
           - Arti version: $env:arti_version
           - Lyrebird, Snowflake, WebTunnel: latest main snapshot
@@ -125,10 +153,14 @@ jobs:
           name: "Tor bundle (${{ env.arti_version }})"
           body_path: RELEASE_NOTES.md
           files: |
-            dist/arti.zip
-            dist/lyrebird.zip
-            dist/snowflake.zip
-            dist/webtunnel.zip
+            dist/arti-x64.zip
+            dist/arti-i686.zip
+            dist/lyrebird-x64.zip
+            dist/lyrebird-i686.zip
+            dist/snowflake-x64.zip
+            dist/snowflake-i686.zip
+            dist/webtunnel-x64.zip
+            dist/webtunnel-i686.zip
             dist/bundle.zip
             dist/SHA256SUMS.txt
         env:
