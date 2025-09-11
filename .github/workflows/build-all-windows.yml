@@ -66,7 +66,7 @@ jobs:
         run: |
           cargo build --release --target x86_64-pc-windows-msvc `
             -p arti -p tor-circmgr -p tor-cell -p tor-proto --bin arti `
-            --features "static,conflux,tor-circmgr/ntor_v3,vanguards"
+            --features "static,conflux,vanguards"
 
       - name: Copy arti x64 TEST binary
         if: success() || failure()
@@ -136,7 +136,7 @@ jobs:
           Bundle build for Windows x64
 
           - Arti version: $env:arti_version
-          - TEST build x64 with features: conflux, tor-circmgr/ntor_v3, vanguards
+          - TEST build x64 with features: conflux, vanguards
           - Lyrebird, Snowflake, WebTunnel: latest main snapshot
           "@ | Out-File RELEASE_NOTES.md -Encoding utf8
 
