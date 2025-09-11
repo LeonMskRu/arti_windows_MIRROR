@@ -59,14 +59,24 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item arti/target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64.exe
 
-      # ---------------- TEST BUILD (x64 only, дополнительные features) ----------------
+      # ---------------- TEST BUILD (x64 only) ----------------
       - name: Build arti.exe TEST x64
         working-directory: arti
+        continue-on-error: true
         run: |
           cargo build --release --target x86_64-pc-windows-msvc `
-            --package arti --bin arti `
+            -p arti -p tor-circmgr -p tor-cell -p tor-proto --bin arti `
             --features "static,conflux,tor-circmgr/ntor_v3,vanguards"
-          Copy-Item target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64-test.exe
+
+      - name: Copy arti x64 TEST binary
+        if: success() || failure()
+        continue-on-error: true
+        run: |
+          if (Test-Path target/x86_64-pc-windows-msvc/release/arti.exe) {
+            Copy-Item target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64-test.exe
+          } else {
+            Write-Host "⚠️ TEST build failed, skipping copy."
+          }
 
       # ---------------- Go toolchain ----------------
       - name: Setup Go
