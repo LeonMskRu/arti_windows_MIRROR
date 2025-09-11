@@ -64,18 +64,31 @@ jobs:
         working-directory: arti
         continue-on-error: true
         run: |
+          Write-Host "🛠️ Starting TEST build..."
           cargo build --release --target x86_64-pc-windows-msvc `
-            -p arti -p tor-circmgr -p tor-cell -p tor-proto --bin arti `
-            --features "static,conflux,vanguards"
+            -p arti -p tor-circmgr -p tor-cell -p tor-proto `
+            --bin arti `
+            --features "static,conflux,vanguards" `
+            --verbose
 
-      - name: Copy arti x64 TEST binary
-        if: success() || failure()
+      - name: Log TEST build artifacts
+        working-directory: arti
         continue-on-error: true
         run: |
-          if (Test-Path target/x86_64-pc-windows-msvc/release/arti.exe) {
-            Copy-Item target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64-test.exe
+          Write-Host "📦 Listing TEST build artifacts:"
+          Get-ChildItem target/x86_64-pc-windows-msvc/release -File | ForEach-Object {
+            Write-Host "  $_.Name"
+          }
+
+      - name: Copy arti x64 TEST binary
+        continue-on-error: true
+        run: |
+          $src = "arti/target/x86_64-pc-windows-msvc/release/arti.exe"
+          if (Test-Path $src) {
+            Copy-Item $src dist/arti-x64-test.exe
+            Write-Host "✅ TEST binary copied to dist/arti-x64-test.exe"
           } else {
-            Write-Host "⚠️ TEST build failed, skipping copy."
+            Write-Host "⚠️ TEST build did not produce arti.exe, skipping copy."
           }
 
       # ---------------- Go toolchain ----------------
@@ -136,7 +149,7 @@ jobs:
           Bundle build for Windows x64
 
           - Arti version: $env:arti_version
-          - TEST build x64 with features: conflux, vanguards
+          - TEST build x64 with features: static, conflux, vanguards
           - Lyrebird, Snowflake, WebTunnel: latest main snapshot
           "@ | Out-File RELEASE_NOTES.md -Encoding utf8
 
