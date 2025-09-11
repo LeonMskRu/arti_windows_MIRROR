@@ -1,4 +1,4 @@
-name: Build Arti + Transports (Windows x64 + i686)
+name: Build Arti + Transports (Windows x64 + TEST)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
         shell: pwsh
 
     steps:
-      # ---------------- Checkout meta repo ----------------
+      # ---------------- Checkout ----------------
       - name: Checkout meta repo
         uses: actions/checkout@v4
         with:
@@ -27,14 +27,13 @@ jobs:
       - name: Install SQLite (for static build)
         run: choco install sqlite -y
 
-      # ---------------- Rust / arti ----------------
-      - name: Setup Rust (MSVC x64 + i686)
+      # ---------------- Rust toolchain ----------------
+      - name: Setup Rust (MSVC x64)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: |
-            x86_64-pc-windows-msvc
-            i686-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc
 
+      # ---------------- Clone Arti ----------------
       - name: Clone Arti (mirror)
         run: |
           git clone --depth 1 --branch main https://github.com/${{ github.repository_owner }}/arti-mirror arti
@@ -50,14 +49,24 @@ jobs:
           echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
           Write-Host "Arti version: $ver"
 
-      - name: Build arti.exe (x64 & i686)
+      # ---------------- Build Arti x64 ----------------
+      - name: Build arti.exe x64
+        working-directory: arti
+        run: cargo build --release --target x86_64-pc-windows-msvc --package arti --bin arti --features static
+
+      - name: Copy arti x64 binary
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item arti/target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64.exe
+
+      # ---------------- TEST BUILD (x64 only, дополнительные features) ----------------
+      - name: Build arti.exe TEST x64
         working-directory: arti
         run: |
-          cargo build --release --target x86_64-pc-windows-msvc --features static
-          cargo build --release --target i686-pc-windows-msvc --features static
-          New-Item -ItemType Directory -Force ..\dist | Out-Null
-          Copy-Item target\x86_64-pc-windows-msvc\release\arti.exe ..\dist\arti-x64.exe
-          Copy-Item target\i686-pc-windows-msvc\release\arti.exe   ..\dist\arti-i686.exe
+          cargo build --release --target x86_64-pc-windows-msvc `
+            --package arti --bin arti `
+            --features "static,conflux,tor-circmgr/ntor_v3,vanguards"
+          Copy-Item target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64-test.exe
 
       # ---------------- Go toolchain ----------------
       - name: Setup Go
@@ -65,63 +74,39 @@ jobs:
         with:
           go-version: stable
 
-      # ---------- lyrebird ----------
-      - name: Clone lyrebird (Go)
+      # ---------------- Lyrebird x64 ----------------
+      - name: Clone lyrebird
         run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git
 
-      - name: Build lyrebird.exe (x64)
+      - name: Build lyrebird x64
         working-directory: lyrebird/cmd/lyrebird
         run: go build -o ../../../dist/lyrebird-x64.exe .
 
-      - name: Build lyrebird.exe (i686)
-        working-directory: lyrebird/cmd/lyrebird
-        run: |
-          $env:GOOS="windows"
-          $env:GOARCH="386"
-          go build -o ../../../dist/lyrebird-i686.exe .
-
-      # ---------- snowflake (client) ----------
-      - name: Clone snowflake (Go)
+      # ---------------- Snowflake x64 ----------------
+      - name: Clone snowflake
         run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake.git
 
-      - name: Build snowflake-client.exe (x64)
+      - name: Build snowflake x64
         working-directory: snowflake/client
         run: go build -o ../../dist/snowflake-client-x64.exe .
 
-      - name: Build snowflake-client.exe (i686)
-        working-directory: snowflake/client
-        run: |
-          $env:GOOS="windows"
-          $env:GOARCH="386"
-          go build -o ../../dist/snowflake-client-i686.exe .
-
-      # ---------- webtunnel (client) ----------
-      - name: Clone webtunnel (Go)
+      # ---------------- WebTunnel x64 ----------------
+      - name: Clone webtunnel
         run: git clone --depth 1 https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/webtunnel.git
 
-      - name: Build webtunnel-client.exe (x64)
+      - name: Build webtunnel x64
         working-directory: webtunnel/main/client
         run: go build -o ../../../dist/webtunnel-client-x64.exe .
 
-      - name: Build webtunnel-client.exe (i686)
-        working-directory: webtunnel/main/client
-        run: |
-          $env:GOOS="windows"
-          $env:GOARCH="386"
-          go build -o ../../../dist/webtunnel-client-i686.exe .
-
-      # ---------------- упаковка ----------------
+      # ---------------- Packaging ----------------
       - name: Create ZIPs
         run: |
-          Compress-Archive -Path dist\arti-x64.exe             -DestinationPath dist\arti-x64.zip
-          Compress-Archive -Path dist\arti-i686.exe            -DestinationPath dist\arti-i686.zip
-          Compress-Archive -Path dist\lyrebird-x64.exe         -DestinationPath dist\lyrebird-x64.zip
-          Compress-Archive -Path dist\lyrebird-i686.exe        -DestinationPath dist\lyrebird-i686.zip
-          Compress-Archive -Path dist\snowflake-client-x64.exe -DestinationPath dist\snowflake-x64.zip
-          Compress-Archive -Path dist\snowflake-client-i686.exe -DestinationPath dist\snowflake-i686.zip
-          Compress-Archive -Path dist\webtunnel-client-x64.exe -DestinationPath dist\webtunnel-x64.zip
-          Compress-Archive -Path dist\webtunnel-client-i686.exe -DestinationPath dist\webtunnel-i686.zip
-          Compress-Archive -Path dist\*.exe                    -DestinationPath dist\bundle.zip
+          Compress-Archive -Path dist/arti-x64.exe             -DestinationPath dist/arti-x64.zip
+          Compress-Archive -Path dist/arti-x64-test.exe        -DestinationPath dist/arti-x64-test.zip
+          Compress-Archive -Path dist/lyrebird-x64.exe         -DestinationPath dist/lyrebird-x64.zip
+          Compress-Archive -Path dist/snowflake-client-x64.exe -DestinationPath dist/snowflake-x64.zip
+          Compress-Archive -Path dist/webtunnel-client-x64.exe -DestinationPath dist/webtunnel-x64.zip
+          Compress-Archive -Path dist/*.exe                    -DestinationPath dist/bundle.zip
 
       # ---------------- SHA256 ----------------
       - name: SHA256 checksums
@@ -131,18 +116,17 @@ jobs:
             $files | ForEach-Object {
                 $h = Get-FileHash $_.FullName -Algorithm SHA256
                 "$($h.Hash)  $($_.Name)"
-            } | Out-File dist\SHA256SUMS.txt -Encoding ascii
-          } else {
-            Write-Host "⚠️ No files to hash, skipping SHA256SUMS.txt"
+            } | Out-File dist/SHA256SUMS.txt -Encoding ascii
           }
 
       # ---------------- Release ----------------
       - name: Prepare release notes
         run: |
           @"
-          Bundle build for Windows x64 + i686
+          Bundle build for Windows x64
 
           - Arti version: $env:arti_version
+          - TEST build x64 with features: conflux, tor-circmgr/ntor_v3, vanguards
           - Lyrebird, Snowflake, WebTunnel: latest main snapshot
           "@ | Out-File RELEASE_NOTES.md -Encoding utf8
 
@@ -154,13 +138,10 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             dist/arti-x64.zip
-            dist/arti-i686.zip
+            dist/arti-x64-test.zip
             dist/lyrebird-x64.zip
-            dist/lyrebird-i686.zip
             dist/snowflake-x64.zip
-            dist/snowflake-i686.zip
             dist/webtunnel-x64.zip
-            dist/webtunnel-i686.zip
             dist/bundle.zip
             dist/SHA256SUMS.txt
         env:
