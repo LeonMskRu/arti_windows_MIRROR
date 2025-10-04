@@ -16,7 +16,7 @@ jobs:
         shell: pwsh
 
     steps:
-      # ---------------- Checkout ----------------
+      # ---------------- Checkout meta repo ----------------
       - name: Checkout meta repo
         uses: actions/checkout@v4
         with:
@@ -36,18 +36,30 @@ jobs:
       # ---------------- Clone Arti ----------------
       - name: Clone Arti (mirror)
         run: |
-          git clone --depth 1 --branch main https://github.com/${{ github.repository_owner }}/arti-mirror arti
+          git clone --depth 0 https://github.com/${{ github.repository_owner }}/arti-mirror arti
           cd arti
           git fetch --tags --force
 
-      - name: Detect Arti version
+      - name: Show last 5 tags (debug)
+        working-directory: arti
+        run: |
+          echo "Последние теги:"
+          git tag -l "arti-*" --sort=-v:refname | Select-Object -First 5
+
+      - name: Detect latest Arti version
         id: arti_ver
         working-directory: arti
         run: |
-          $ver = git tag --list "arti-*" --sort=-creatordate | Select-Object -First 1
+          $ver = git tag --list "arti-*" --sort=-v:refname | Select-Object -First 1
           if ([string]::IsNullOrEmpty($ver)) { $ver="arti-v0.0.0" }
           echo "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
-          Write-Host "Arti version: $ver"
+          Write-Host "✅ Latest Arti version detected: $ver"
+
+      - name: Checkout latest tag
+        working-directory: arti
+        run: |
+          git checkout $env:arti_version
+          Write-Host "🔖 Checked out $env:arti_version"
 
       # ---------------- Build Arti x64 ----------------
       - name: Build arti.exe x64
@@ -77,7 +89,7 @@ jobs:
         run: |
           Write-Host "📦 Listing TEST build artifacts:"
           Get-ChildItem target/x86_64-pc-windows-msvc/release -File | ForEach-Object {
-            Write-Host "  $_.Name"
+            Write-Host "  $($_.Name)"
           }
 
       - name: Copy arti x64 TEST binary
