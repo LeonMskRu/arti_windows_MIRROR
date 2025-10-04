@@ -35,15 +35,12 @@ jobs:
 
       # ---------------- Clone Arti ----------------
       - name: Clone Arti (mirror)
-        run: |
-          git clone --depth 0 https://github.com/${{ github.repository_owner }}/arti-mirror arti
-          cd arti
-          git fetch --tags --force
+        run: git clone https://github.com/${{ github.repository_owner }}/arti-mirror arti
 
       - name: Show last 5 tags (debug)
         working-directory: arti
         run: |
-          echo "Последние теги:"
+          Write-Host "Последние теги:"
           git tag -l "arti-*" --sort=-v:refname | Select-Object -First 5
 
       - name: Detect latest Arti version
@@ -57,9 +54,7 @@ jobs:
 
       - name: Checkout latest tag
         working-directory: arti
-        run: |
-          git checkout $env:arti_version
-          Write-Host "🔖 Checked out $env:arti_version"
+        run: git checkout $env:arti_version
 
       # ---------------- Build Arti x64 ----------------
       - name: Build arti.exe x64
@@ -69,7 +64,7 @@ jobs:
       - name: Copy arti x64 binary
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item arti/target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64.exe
+          Copy-Item arti/target/x86_64-pc-windows-msvc/release/arti.exe dist/arti-x64.exe -Force
 
       # ---------------- TEST BUILD (x64 only) ----------------
       - name: Build arti.exe TEST x64
@@ -97,7 +92,7 @@ jobs:
         run: |
           $src = "arti/target/x86_64-pc-windows-msvc/release/arti.exe"
           if (Test-Path $src) {
-            Copy-Item $src dist/arti-x64-test.exe
+            Copy-Item $src dist/arti-x64-test.exe -Force
             Write-Host "✅ TEST binary copied to dist/arti-x64-test.exe"
           } else {
             Write-Host "⚠️ TEST build did not produce arti.exe, skipping copy."
