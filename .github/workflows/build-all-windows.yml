@@ -1,4 +1,4 @@
-name: Build Arti + Transports (Windows x64 + TEST)
+name: Build Arti + Transports (Windows x64)
 
 on:
   workflow_dispatch:
@@ -29,27 +29,23 @@ jobs:
       - name: Checkout meta repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1       # мета-репо содержит только workflows
+          fetch-depth: 1
 
       # ──────────────────────────────────────────
       # Определяем последнюю версию через git ls-remote
-      # — без клонирования репозитория целиком.
+      # без клонирования репозитория целиком.
       #
-      # ИСПРАВЛЕНИЕ (регрессия FIX-B8 из предыдущей итерации):
-      #   "git clone --depth 1" получает только HEAD-коммит и теги,
-      #   которые непосредственно на него указывают. В mirror-репо
-      #   теги arti-v* указывают на исторические коммиты → они
-      #   невидимы в shallow clone → "No arti-* tags found".
-      #
-      #   Решение: git ls-remote не клонирует репо, а запрашивает
-      #   только список refs. Работает мгновенно и не зависит
-      #   от глубины клонирования.
+      # "git clone --depth 1" получает только HEAD-коммит и теги,
+      # которые непосредственно на него указывают. В mirror-репо
+      # теги arti-v* указывают на исторические коммиты → они
+      # невидимы в shallow clone. git ls-remote не клонирует репо,
+      # а запрашивает только список refs.
       #
       # Формат строк ls-remote:
       #   <sha>\trefs/tags/arti-v2.3.0
       #   <sha>\trefs/tags/arti-v2.3.0^{}   <- peeled annotated tag (исключаем)
       # ──────────────────────────────────────────
-      - name: Detect latest Arti version (via ls-remote)
+      - name: Detect latest Arti version
         id: arti_ver
         run: |
           $mirrorUrl = "https://github.com/${{ github.repository_owner }}/${{ env.ARTI_MIRROR_REPO }}"
@@ -61,18 +57,14 @@ jobs:
             exit 1
           }
 
-          # Отбрасываем peeled-строки вида "arti-v2.3.0^{}"
-          # Берём имя тега из второго поля (после \t)
           $tags = $raw |
                   Where-Object { $_ -notmatch '\^\{\}\s*$' } |
                   ForEach-Object { ($_ -split '\s+')[-1] -replace '^refs/tags/', '' }
 
-          # Показываем топ-5 для диагностики (аналог убранного debug-шага)
           Write-Host "=== Последние теги Arti ==="
           $tags | Select-Object -First 5 | ForEach-Object { Write-Host "  $_" }
 
           $ver = $tags | Select-Object -First 1
-
           if ([string]::IsNullOrEmpty($ver)) {
             Write-Error "❌ No arti-* tags found in mirror. Cannot proceed."
             exit 1
@@ -82,14 +74,12 @@ jobs:
           "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
 
       # ──────────────────────────────────────────
-      # Пропуск если релиз уже существует
+      # Пропуск если релиз уже существует.
       #
-      # ИСПРАВЛЕНИЕ (BUG-C1 / BUG-L1):
-      #   gh release view возвращает exit code 1 если релиза нет.
-      #   Без явного "exit 0" — $LASTEXITCODE == 1 остаётся
-      #   активным при завершении скрипта, pwsh выходит с кодом 1,
-      #   GHA помечает шаг как FAILED, все последующие шаги
-      #   с неявным success() пропускаются.
+      # gh release view возвращает exit code 1 если релиза нет.
+      # Без явного "exit 0" — $LASTEXITCODE == 1 остаётся
+      # активным, pwsh выходит с кодом 1, GHA помечает шаг
+      # как FAILED, все последующие шаги пропускаются.
       # ──────────────────────────────────────────
       - name: Check if release already exists
         id: check_release
@@ -105,14 +95,12 @@ jobs:
             Write-Host "🆕 Release $ver not found — proceeding with build."
             "skip=false" | Out-File -Append $env:GITHUB_OUTPUT
           }
-          exit 0   # явно сбрасываем $LASTEXITCODE
+          exit 0
 
       # ──────────────────────────────────────────
-      # Клонируем mirror точечно по тегу — только если нужна сборка.
+      # Клонируем mirror точечно по тегу.
       # --depth 1 --branch <tag> безопасен: клонирует ровно тот
       # коммит, на который указывает тег, без лишней истории.
-      # (В отличие от "clone --depth 1" без --branch, который клонирует
-      #  HEAD и не видит теги на исторических коммитах.)
       # ──────────────────────────────────────────
       - name: Clone Arti mirror at tag
         if: steps.check_release.outputs.skip == 'false'
@@ -152,31 +140,18 @@ jobs:
             cargo-win-x64-
 
       # ──────────────────────────────────────────
-      # SQLite static lib через vcpkg
-      #
-      # ИСПРАВЛЕНИЕ (BUG-C2 / BUG-B3):
-      #   "vcpkg env VCPKG_ROOT" — несуществующая подкоманда vcpkg.
-      #   Правильно: $env:VCPKG_INSTALLATION_ROOT (стандартная
-      #   переменная GHA windows runner).
-      #
-      # ИСПРАВЛЕНИЕ (BUG-B6):
-      #   Добавлена проверка существования $libDir.
-      #
-      # ИСПРАВЛЕНИЕ (BUG-B9):
-      #   vcpkg update перед install.
+      # SQLite static lib через vcpkg.
+      # $env:VCPKG_INSTALLATION_ROOT — стандартная переменная
+      # GHA windows runner (C:\vcpkg).
       # ──────────────────────────────────────────
       - name: Install SQLite static lib
         if: steps.check_release.outputs.skip == 'false'
         run: |
-          # FIX-B3: правильный способ получения пути vcpkg на GHA runner
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           if ([string]::IsNullOrEmpty($vcpkgRoot)) { $vcpkgRoot = "C:\vcpkg" }
           Write-Host "ℹ️ vcpkg root: $vcpkgRoot"
 
-          # FIX-B9: обновляем портфолио перед установкой
           & "$vcpkgRoot\vcpkg.exe" update 2>&1 | Write-Host
-
-          # vcpkg даёт статическую .lib, а не .dll как choco
           & "$vcpkgRoot\vcpkg.exe" install sqlite3:x64-windows-static
           if ($LASTEXITCODE -ne 0) {
             Write-Error "❌ vcpkg install sqlite3 failed (exit $LASTEXITCODE)"
@@ -184,8 +159,6 @@ jobs:
           }
 
           $libDir = "$vcpkgRoot\installed\x64-windows-static\lib"
-
-          # FIX-B6: проверяем что путь реально существует
           if (-not (Test-Path $libDir)) {
             Write-Error "❌ Expected SQLITE3_LIB_DIR not found: $libDir"
             exit 1
@@ -196,11 +169,9 @@ jobs:
           Write-Host "✅ SQLITE3_LIB_DIR=$libDir"
 
       # ──────────────────────────────────────────
-      # Build Arti STABLE x64
-      # NOTE: убедитесь, что feature "static" существует
-      #       в Cargo.toml целевой версии Arti (BUG-B5).
+      # Build Arti x64
       # ──────────────────────────────────────────
-      - name: Build arti.exe (stable, x64)
+      - name: Build arti.exe (x64)
         if: steps.check_release.outputs.skip == 'false'
         working-directory: arti
         run: |
@@ -210,42 +181,13 @@ jobs:
             --bin arti `
             --features static
 
-      - name: Copy arti stable binary
+      - name: Copy arti binary
         if: steps.check_release.outputs.skip == 'false'
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item arti/target/x86_64-pc-windows-msvc/release/arti.exe `
                     dist/arti-x64.exe -Force
           Write-Host "✅ dist/arti-x64.exe ready"
-
-      # ──────────────────────────────────────────
-      # Build Arti TEST x64 (экспериментальные фичи)
-      # ──────────────────────────────────────────
-      - name: Build arti.exe (TEST — conflux + vanguards, x64)
-        if: steps.check_release.outputs.skip == 'false'
-        id: test_build
-        working-directory: arti
-        continue-on-error: true
-        run: |
-          Write-Host "🛠️ Starting TEST build (conflux, vanguards)..."
-          cargo build --release `
-            --target x86_64-pc-windows-msvc `
-            --package arti `
-            --bin arti `
-            --features "static,conflux,vanguards" `
-            --verbose
-
-      - name: Copy arti TEST binary
-        if: steps.check_release.outputs.skip == 'false'
-        continue-on-error: true
-        run: |
-          $src = "arti/target/x86_64-pc-windows-msvc/release/arti.exe"
-          if (Test-Path $src) {
-            Copy-Item $src dist/arti-x64-test.exe -Force
-            Write-Host "✅ dist/arti-x64-test.exe ready"
-          } else {
-            Write-Host "⚠️ TEST build did not produce arti.exe — skipping"
-          }
 
       # ──────────────────────────────────────────
       # Go toolchain (транспорты)
@@ -255,6 +197,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
+          cache: false   # go.sum нет в корне мета-репо — отключаем автокэш
 
       # ──────────────────────────────────────────
       # Lyrebird
@@ -304,33 +247,22 @@ jobs:
       - name: Create ZIPs
         if: steps.check_release.outputs.skip == 'false'
         run: |
-          # Stable — обязателен; если .exe нет — падаем явно
           if (-not (Test-Path dist/arti-x64.exe)) {
-            Write-Error "❌ dist/arti-x64.exe not found — stable build failed"
+            Write-Error "❌ dist/arti-x64.exe not found — build failed"
             exit 1
           }
-
           Compress-Archive -Path dist/arti-x64.exe             -DestinationPath dist/arti-x64.zip             -Force
           Compress-Archive -Path dist/lyrebird-x64.exe         -DestinationPath dist/lyrebird-x64.zip          -Force
           Compress-Archive -Path dist/snowflake-client-x64.exe -DestinationPath dist/snowflake-x64.zip         -Force
           Compress-Archive -Path dist/webtunnel-client-x64.exe -DestinationPath dist/webtunnel-x64.zip         -Force
-
-          # TEST — необязателен
-          if (Test-Path dist/arti-x64-test.exe) {
-            Compress-Archive -Path dist/arti-x64-test.exe      -DestinationPath dist/arti-x64-test.zip         -Force
-            Write-Host "✅ arti-x64-test.zip created"
-          } else {
-            Write-Host "⚠️ arti-x64-test.exe missing — skipping test zip"
-          }
-
-          # bundle.zip из всех .exe в dist/
           Compress-Archive -Path dist/*.exe                    -DestinationPath dist/bundle-executables.zip    -Force
+          Write-Host "✅ All ZIPs created"
 
       # ──────────────────────────────────────────
       # SHA256 — только для .zip файлов
       # Два пробела между хешем и именем — стандарт sha256sum
       # ──────────────────────────────────────────
-      - name: SHA256 checksums (only .zip)
+      - name: SHA256 checksums
         if: steps.check_release.outputs.skip == 'false'
         run: |
           $zips = Get-ChildItem dist -Filter *.zip
@@ -347,28 +279,16 @@ jobs:
 
       # ──────────────────────────────────────────
       # Release notes
-      #
-      # ИСПРАВЛЕНИЕ (BUG-C3 / BUG-B4):
-      #   $testNote переформатирован как полная строка markdown-таблицы
-      #   (начинается с "| ", заканчивается " |"), а не как list-item "- ...".
-      #   В шаблоне таблицы убран дублирующий trailing "|" после $testNote.
       # ──────────────────────────────────────────
       - name: Prepare release notes
         if: steps.check_release.outputs.skip == 'false'
         run: |
-          # FIX-B4: строка таблицы, а не list-item
-          $testNote = if (Test-Path dist/arti-x64-test.exe) {
-            "| **arti-x64-test** | experimental: ``static``, ``conflux``, ``vanguards`` |"
-          } else {
-            "| **arti-x64-test** | ⚠️ TEST build FAILED (skipped) |"
-          }
           @"
           ## Tor / Arti Windows x64 Bundle
 
           | Binary | Source |
           |--------|--------|
           | **arti-x64** | Arti ${{ env.arti_version }} — stable (``--features static``) |
-          $testNote
           | **lyrebird-x64** | lyrebird ``${{ env.LYREBIRD_REF }}`` |
           | **snowflake-client-x64** | snowflake ``${{ env.SNOWFLAKE_REF }}`` |
           | **webtunnel-client-x64** | webtunnel ``${{ env.WEBTUNNEL_REF }}`` |
@@ -389,7 +309,6 @@ jobs:
           fail_on_unmatched_files: false
           files: |
             dist/arti-x64.zip
-            dist/arti-x64-test.zip
             dist/lyrebird-x64.zip
             dist/snowflake-x64.zip
             dist/webtunnel-x64.zip
