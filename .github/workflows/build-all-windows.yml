@@ -13,8 +13,7 @@ env:
   LYREBIRD_REF:     main          # можно заменить на конкретный тег/коммит
   SNOWFLAKE_REF:    main
   WEBTUNNEL_REF:    main
-  # FIX-B7: opt-in в Node.js 24 для actions до принудительного перехода 02.06.2026
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Node.js 24 opt-in (обязателен с 02.06.2026)
 
 jobs:
   build-release:
@@ -33,40 +32,64 @@ jobs:
           fetch-depth: 1       # мета-репо содержит только workflows
 
       # ──────────────────────────────────────────
-      # Clone Arti mirror
-      # FIX-B8: добавлен --depth 1 для ускорения клонирования
+      # Определяем последнюю версию через git ls-remote
+      # — без клонирования репозитория целиком.
+      #
+      # ИСПРАВЛЕНИЕ (регрессия FIX-B8 из предыдущей итерации):
+      #   "git clone --depth 1" получает только HEAD-коммит и теги,
+      #   которые непосредственно на него указывают. В mirror-репо
+      #   теги arti-v* указывают на исторические коммиты → они
+      #   невидимы в shallow clone → "No arti-* tags found".
+      #
+      #   Решение: git ls-remote не клонирует репо, а запрашивает
+      #   только список refs. Работает мгновенно и не зависит
+      #   от глубины клонирования.
+      #
+      # Формат строк ls-remote:
+      #   <sha>\trefs/tags/arti-v2.3.0
+      #   <sha>\trefs/tags/arti-v2.3.0^{}   <- peeled annotated tag (исключаем)
       # ──────────────────────────────────────────
-      - name: Clone Arti mirror
-        run: |
-          git clone --depth 1 `
-            https://github.com/${{ github.repository_owner }}/${{ env.ARTI_MIRROR_REPO }} `
-            arti
-
-      - name: Show last 5 Arti tags (debug)
-        working-directory: arti
-        run: |
-          Write-Host "=== Последние теги Arti ==="
-          git tag -l "arti-*" --sort=-v:refname | Select-Object -First 5
-
-      - name: Detect latest Arti version
+      - name: Detect latest Arti version (via ls-remote)
         id: arti_ver
-        working-directory: arti
         run: |
-          $ver = git tag --list "arti-*" --sort=-v:refname | Select-Object -First 1
+          $mirrorUrl = "https://github.com/${{ github.repository_owner }}/${{ env.ARTI_MIRROR_REPO }}"
+          Write-Host "🔍 Querying tags from: $mirrorUrl"
+
+          $raw = git ls-remote --tags --sort=-v:refname $mirrorUrl "refs/tags/arti-*" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ git ls-remote failed (exit $LASTEXITCODE)"
+            exit 1
+          }
+
+          # Отбрасываем peeled-строки вида "arti-v2.3.0^{}"
+          # Берём имя тега из второго поля (после \t)
+          $tags = $raw |
+                  Where-Object { $_ -notmatch '\^\{\}\s*$' } |
+                  ForEach-Object { ($_ -split '\s+')[-1] -replace '^refs/tags/', '' }
+
+          # Показываем топ-5 для диагностики (аналог убранного debug-шага)
+          Write-Host "=== Последние теги Arti ==="
+          $tags | Select-Object -First 5 | ForEach-Object { Write-Host "  $_" }
+
+          $ver = $tags | Select-Object -First 1
+
           if ([string]::IsNullOrEmpty($ver)) {
             Write-Error "❌ No arti-* tags found in mirror. Cannot proceed."
             exit 1
           }
-          "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
+
           Write-Host "✅ Latest Arti version: $ver"
+          "arti_version=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV
 
       # ──────────────────────────────────────────
       # Пропуск если релиз уже существует
-      # FIX-B1 + FIX-B2: добавлен "exit 0" в конец шага.
-      #   gh release view возвращает exit code 1 когда релиза нет.
-      #   Без exit 0 — $LASTEXITCODE == 1 остаётся активным, pwsh
-      #   завершается с кодом 1, GHA помечает шаг как FAILED,
-      #   все последующие шаги с неявным success() пропускаются.
+      #
+      # ИСПРАВЛЕНИЕ (BUG-C1 / BUG-L1):
+      #   gh release view возвращает exit code 1 если релиза нет.
+      #   Без явного "exit 0" — $LASTEXITCODE == 1 остаётся
+      #   активным при завершении скрипта, pwsh выходит с кодом 1,
+      #   GHA помечает шаг как FAILED, все последующие шаги
+      #   с неявным success() пропускаются.
       # ──────────────────────────────────────────
       - name: Check if release already exists
         id: check_release
@@ -82,12 +105,27 @@ jobs:
             Write-Host "🆕 Release $ver not found — proceeding with build."
             "skip=false" | Out-File -Append $env:GITHUB_OUTPUT
           }
-          exit 0   # FIX-B1: явно обнуляем код возврата
+          exit 0   # явно сбрасываем $LASTEXITCODE
 
-      - name: Checkout latest Arti tag
+      # ──────────────────────────────────────────
+      # Клонируем mirror точечно по тегу — только если нужна сборка.
+      # --depth 1 --branch <tag> безопасен: клонирует ровно тот
+      # коммит, на который указывает тег, без лишней истории.
+      # (В отличие от "clone --depth 1" без --branch, который клонирует
+      #  HEAD и не видит теги на исторических коммитах.)
+      # ──────────────────────────────────────────
+      - name: Clone Arti mirror at tag
         if: steps.check_release.outputs.skip == 'false'
-        working-directory: arti
-        run: git checkout $env:arti_version
+        run: |
+          $ver = $env:arti_version
+          $mirrorUrl = "https://github.com/${{ github.repository_owner }}/${{ env.ARTI_MIRROR_REPO }}"
+          Write-Host "📥 Cloning $mirrorUrl at tag $ver ..."
+          git clone --depth 1 --branch $ver $mirrorUrl arti
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ git clone failed (exit $LASTEXITCODE)"
+            exit 1
+          }
+          Write-Host "✅ Cloned Arti at $ver"
 
       # ──────────────────────────────────────────
       # Rust toolchain
@@ -115,10 +153,17 @@ jobs:
 
       # ──────────────────────────────────────────
       # SQLite static lib через vcpkg
-      # FIX-B3: заменён "vcpkg env VCPKG_ROOT" (несуществующая подкоманда)
-      #         на $env:VCPKG_INSTALLATION_ROOT (стандартная переменная GHA runner).
-      # FIX-B6: добавлена проверка существования $libDir перед записью в GITHUB_ENV.
-      # FIX-B9: добавлен vcpkg update перед install.
+      #
+      # ИСПРАВЛЕНИЕ (BUG-C2 / BUG-B3):
+      #   "vcpkg env VCPKG_ROOT" — несуществующая подкоманда vcpkg.
+      #   Правильно: $env:VCPKG_INSTALLATION_ROOT (стандартная
+      #   переменная GHA windows runner).
+      #
+      # ИСПРАВЛЕНИЕ (BUG-B6):
+      #   Добавлена проверка существования $libDir.
+      #
+      # ИСПРАВЛЕНИЕ (BUG-B9):
+      #   vcpkg update перед install.
       # ──────────────────────────────────────────
       - name: Install SQLite static lib
         if: steps.check_release.outputs.skip == 'false'
@@ -152,8 +197,8 @@ jobs:
 
       # ──────────────────────────────────────────
       # Build Arti STABLE x64
-      # NOTE: --features static — убедитесь что feature существует
-      #       в Cargo.toml целевой версии Arti (FIX-B5 awareness)
+      # NOTE: убедитесь, что feature "static" существует
+      #       в Cargo.toml целевой версии Arti (BUG-B5).
       # ──────────────────────────────────────────
       - name: Build arti.exe (stable, x64)
         if: steps.check_release.outputs.skip == 'false'
@@ -302,9 +347,11 @@ jobs:
 
       # ──────────────────────────────────────────
       # Release notes
-      # FIX-B4: $testNote переформатирован как полная строка markdown-таблицы
-      #         (начинается с "| ", заканчивается " |"), а не как list-item "- ...".
-      #         В шаблоне таблицы убран дублирующий trailing "|" после $testNote.
+      #
+      # ИСПРАВЛЕНИЕ (BUG-C3 / BUG-B4):
+      #   $testNote переформатирован как полная строка markdown-таблицы
+      #   (начинается с "| ", заканчивается " |"), а не как list-item "- ...".
+      #   В шаблоне таблицы убран дублирующий trailing "|" после $testNote.
       # ──────────────────────────────────────────
       - name: Prepare release notes
         if: steps.check_release.outputs.skip == 'false'
