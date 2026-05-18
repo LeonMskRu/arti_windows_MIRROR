@@ -13,6 +13,8 @@ env:
   LYREBIRD_REF:     main          # можно заменить на конкретный тег/коммит
   SNOWFLAKE_REF:    main
   WEBTUNNEL_REF:    main
+  # FIX-B7: opt-in в Node.js 24 для actions до принудительного перехода 02.06.2026
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-release:
@@ -32,10 +34,11 @@ jobs:
 
       # ──────────────────────────────────────────
       # Clone Arti mirror
+      # FIX-B8: добавлен --depth 1 для ускорения клонирования
       # ──────────────────────────────────────────
       - name: Clone Arti mirror
         run: |
-          git clone `
+          git clone --depth 1 `
             https://github.com/${{ github.repository_owner }}/${{ env.ARTI_MIRROR_REPO }} `
             arti
 
@@ -59,6 +62,11 @@ jobs:
 
       # ──────────────────────────────────────────
       # Пропуск если релиз уже существует
+      # FIX-B1 + FIX-B2: добавлен "exit 0" в конец шага.
+      #   gh release view возвращает exit code 1 когда релиза нет.
+      #   Без exit 0 — $LASTEXITCODE == 1 остаётся активным, pwsh
+      #   завершается с кодом 1, GHA помечает шаг как FAILED,
+      #   все последующие шаги с неявным success() пропускаются.
       # ──────────────────────────────────────────
       - name: Check if release already exists
         id: check_release
@@ -66,7 +74,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ver = $env:arti_version
-          $exists = gh release view $ver 2>&1
+          $null = gh release view $ver 2>&1
           if ($LASTEXITCODE -eq 0) {
             Write-Host "⏭️ Release $ver already exists — skipping build."
             "skip=true"  | Out-File -Append $env:GITHUB_OUTPUT
@@ -74,6 +82,7 @@ jobs:
             Write-Host "🆕 Release $ver not found — proceeding with build."
             "skip=false" | Out-File -Append $env:GITHUB_OUTPUT
           }
+          exit 0   # FIX-B1: явно обнуляем код возврата
 
       - name: Checkout latest Arti tag
         if: steps.check_release.outputs.skip == 'false'
@@ -105,24 +114,46 @@ jobs:
             cargo-win-x64-
 
       # ──────────────────────────────────────────
-      # SQLite (bundled через feature — не зависит от choco)
-      # rusqlite bundled сам компилирует sqlite из исходников
-      # Если arti использует SQLITE3_LIB_DIR — оставьте блок ниже
+      # SQLite static lib через vcpkg
+      # FIX-B3: заменён "vcpkg env VCPKG_ROOT" (несуществующая подкоманда)
+      #         на $env:VCPKG_INSTALLATION_ROOT (стандартная переменная GHA runner).
+      # FIX-B6: добавлена проверка существования $libDir перед записью в GITHUB_ENV.
+      # FIX-B9: добавлен vcpkg update перед install.
       # ──────────────────────────────────────────
-      - name: Install SQLite static lib (если нужна внешняя)
+      - name: Install SQLite static lib
         if: steps.check_release.outputs.skip == 'false'
         run: |
+          # FIX-B3: правильный способ получения пути vcpkg на GHA runner
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if ([string]::IsNullOrEmpty($vcpkgRoot)) { $vcpkgRoot = "C:\vcpkg" }
+          Write-Host "ℹ️ vcpkg root: $vcpkgRoot"
+
+          # FIX-B9: обновляем портфолио перед установкой
+          & "$vcpkgRoot\vcpkg.exe" update 2>&1 | Write-Host
+
           # vcpkg даёт статическую .lib, а не .dll как choco
-          vcpkg install sqlite3:x64-windows-static
-          $vcpkgRoot = (vcpkg env VCPKG_ROOT 2>$null)
-          if (-not $vcpkgRoot) { $vcpkgRoot = "C:\vcpkg" }
+          & "$vcpkgRoot\vcpkg.exe" install sqlite3:x64-windows-static
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ vcpkg install sqlite3 failed (exit $LASTEXITCODE)"
+            exit 1
+          }
+
           $libDir = "$vcpkgRoot\installed\x64-windows-static\lib"
-          "SQLITE3_LIB_DIR=$libDir"   | Out-File -Append $env:GITHUB_ENV
-          "SQLITE3_STATIC=1"           | Out-File -Append $env:GITHUB_ENV
+
+          # FIX-B6: проверяем что путь реально существует
+          if (-not (Test-Path $libDir)) {
+            Write-Error "❌ Expected SQLITE3_LIB_DIR not found: $libDir"
+            exit 1
+          }
+
+          "SQLITE3_LIB_DIR=$libDir" | Out-File -Append $env:GITHUB_ENV
+          "SQLITE3_STATIC=1"        | Out-File -Append $env:GITHUB_ENV
           Write-Host "✅ SQLITE3_LIB_DIR=$libDir"
 
       # ──────────────────────────────────────────
       # Build Arti STABLE x64
+      # NOTE: --features static — убедитесь что feature существует
+      #       в Cargo.toml целевой версии Arti (FIX-B5 awareness)
       # ──────────────────────────────────────────
       - name: Build arti.exe (stable, x64)
         if: steps.check_release.outputs.skip == 'false'
@@ -233,25 +264,26 @@ jobs:
             Write-Error "❌ dist/arti-x64.exe not found — stable build failed"
             exit 1
           }
-          Compress-Archive -Path dist/arti-x64.exe             -DestinationPath dist/arti-x64.zip -Force
+
+          Compress-Archive -Path dist/arti-x64.exe             -DestinationPath dist/arti-x64.zip             -Force
+          Compress-Archive -Path dist/lyrebird-x64.exe         -DestinationPath dist/lyrebird-x64.zip          -Force
+          Compress-Archive -Path dist/snowflake-client-x64.exe -DestinationPath dist/snowflake-x64.zip         -Force
+          Compress-Archive -Path dist/webtunnel-client-x64.exe -DestinationPath dist/webtunnel-x64.zip         -Force
 
           # TEST — необязателен
           if (Test-Path dist/arti-x64-test.exe) {
-            Compress-Archive -Path dist/arti-x64-test.exe      -DestinationPath dist/arti-x64-test.zip -Force
+            Compress-Archive -Path dist/arti-x64-test.exe      -DestinationPath dist/arti-x64-test.zip         -Force
             Write-Host "✅ arti-x64-test.zip created"
           } else {
             Write-Host "⚠️ arti-x64-test.exe missing — skipping test zip"
           }
 
-          Compress-Archive -Path dist/lyrebird-x64.exe         -DestinationPath dist/lyrebird-x64.zip          -Force
-          Compress-Archive -Path dist/snowflake-client-x64.exe -DestinationPath dist/snowflake-x64.zip         -Force
-          Compress-Archive -Path dist/webtunnel-client-x64.exe -DestinationPath dist/webtunnel-x64.zip         -Force
-
-          # bundle.zip из всех .exe
+          # bundle.zip из всех .exe в dist/
           Compress-Archive -Path dist/*.exe                    -DestinationPath dist/bundle-executables.zip    -Force
 
       # ──────────────────────────────────────────
       # SHA256 — только для .zip файлов
+      # Два пробела между хешем и именем — стандарт sha256sum
       # ──────────────────────────────────────────
       - name: SHA256 checksums (only .zip)
         if: steps.check_release.outputs.skip == 'false'
@@ -270,23 +302,26 @@ jobs:
 
       # ──────────────────────────────────────────
       # Release notes
+      # FIX-B4: $testNote переформатирован как полная строка markdown-таблицы
+      #         (начинается с "| ", заканчивается " |"), а не как list-item "- ...".
+      #         В шаблоне таблицы убран дублирующий trailing "|" после $testNote.
       # ──────────────────────────────────────────
       - name: Prepare release notes
         if: steps.check_release.outputs.skip == 'false'
         run: |
+          # FIX-B4: строка таблицы, а не list-item
           $testNote = if (Test-Path dist/arti-x64-test.exe) {
-            "- **arti-x64-test** — experimental build with: ``static``, ``conflux``, ``vanguards``"
+            "| **arti-x64-test** | experimental: ``static``, ``conflux``, ``vanguards`` |"
           } else {
-            "- **arti-x64-test** — TEST build FAILED (skipped)"
+            "| **arti-x64-test** | ⚠️ TEST build FAILED (skipped) |"
           }
-
           @"
           ## Tor / Arti Windows x64 Bundle
 
           | Binary | Source |
           |--------|--------|
-          | **arti-x64** | Arti ${{ env.arti_version }} — stable build (``--features static``) |
-          $testNote |
+          | **arti-x64** | Arti ${{ env.arti_version }} — stable (``--features static``) |
+          $testNote
           | **lyrebird-x64** | lyrebird ``${{ env.LYREBIRD_REF }}`` |
           | **snowflake-client-x64** | snowflake ``${{ env.SNOWFLAKE_REF }}`` |
           | **webtunnel-client-x64** | webtunnel ``${{ env.WEBTUNNEL_REF }}`` |
